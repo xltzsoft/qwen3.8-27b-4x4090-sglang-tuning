@@ -228,6 +228,8 @@ prefill 稳态 ~4-4.6k t/s（GEMM bound，约为 4×4090 FP8 理论值的 70%；
 - 实测聚合 tps（300 tokens/请求，客户端口径）：1/8/16/24/32/36 并发 = 95 / 538 / 876 / 1039 / **1187** / 1186——**饱和点 32 并发 ~1190 tps，较旧上限 +18.7%**；
 - 50k needle ✓、单流无回归；EAGLE 在高并发下仍是净收益（verify 一次前向的带宽成本摊到 accept ~2.4-2.9 个 token），无需降级非投机。
 
+**低并发单路延迟探测（阴性结论）**：2-4 并发下单路 ~78-95 tps 已到硬件上限。`--speculative-attention-mode decode`（省 verify 每步 D2H 同步）实测 conc4 单路 84.2/77.2 vs 基线 78.2 t/s（噪声内），高并发聚合反而略亏 3-7%，已回滚。bs=4 decode profile：W8A8 FP8 GEMM 38.4%、NCCL all-reduce+all-gather 28.1%（RING_LL bf16 小 payload 纯延迟，4090 无 NVLink 只能靠 PCIe）、draft 头 bf16 cutlass GEMM 13.8%——均为结构性成本，无软件开关可消除。`--enable-fused-qk-norm-rope` 对本模型无效（仅接入 qwen3_moe/mellum 模型）。
+
 ## 9. 最终配置与入口
 
 ### 9.1 `/root/run_sglang.sh`（最优参数，2026-08-17 起为 EAGLE + HiCache 版）
