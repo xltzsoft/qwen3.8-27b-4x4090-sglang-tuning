@@ -275,6 +275,17 @@ python -m sglang.launch_server \
 
 ---
 
+## 10.1 补丁：多 API key 支持（2026-08-18）
+
+sglang 原生 `--api-key` 仅支持单 key（`sglang/srt/utils/auth.py` 中 `secrets.compare_digest` 单值比对）。如需多 key，打两处小补丁后用逗号分隔传入（`--api-key sk-key1,sk-key2`）：
+
+1. `sglang/srt/utils/auth.py` 的 `_check_bearer_token`：改为对 `expected_token.split(",")` 逐个 `compare_digest`，任一匹配即放行；
+2. `sglang/srt/entrypoints/http_server.py` 的 `_execute_server_warmup`：内部 warmup 请求的 Authorization 头改用第一个 key（`split(',')[0]`），否则 warmup 以整个逗号串鉴权会 401。
+
+打补丁脚本在服务器 `/root/patch_multikey.py`（带 `*.bak-multikey-*` 备份）。**sglang 升级会冲掉补丁，需重打。**
+
+---
+
 ## 11. 遗留问题与未来方向
 
 1. ~~**MTP 投机解码不可用**~~ **已解决（2026-08-16）**：长上下文"崩溃"为日志统计假象 + EAGLE 显存红线（0.80 + 禁 prefill 图）修复后，EAGLE 全面上线（见 §6）；vLLM 侧仍无优势；
