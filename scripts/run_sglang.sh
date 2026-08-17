@@ -20,6 +20,10 @@ exec /opt/sgenv/bin/python -m sglang.launch_server \
   --enable-hierarchical-cache \
   --hicache-size 32 \
   --hicache-write-policy write_back \
+  --max-total-tokens 420000 \
+  --max-mamba-cache-size 180 \
+  --max-running-requests 36 \
+  --cuda-graph-max-bs-decode 36 \
   --speculative-algorithm EAGLE \
   --speculative-num-steps 3 \
   --speculative-eagle-topk 1 \

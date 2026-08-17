@@ -216,6 +216,18 @@ prefill 稳态 ~4-4.6k t/s（GEMM bound，约为 4×4090 FP8 理论值的 70%；
 
 ---
 
+### 8.4 并发上限提升（2026-08-18 增补）
+
+并发上限被 mamba 状态槽封顶在 26（`max_mamba_cache_size=133`，EAGLE 每请求 5 槽）。新增配置用 KV 池换槽位：
+
+```bash
+--max-total-tokens 420000 --max-mamba-cache-size 180 --max-running-requests 36 --cuda-graph-max-bs-decode 36
+```
+
+- KV 池 657,733 → 420,000（对 36 并发仍富余，前缀复用有 HiCache 内存 L2 兜底）；mamba 133 → 180 槽；并发 26 → 36；decode CUDA graph 覆盖到 bs 36；
+- 实测聚合 tps（300 tokens/请求，客户端口径）：1/8/16/24/32/36 并发 = 95 / 538 / 876 / 1039 / **1187** / 1186——**饱和点 32 并发 ~1190 tps，较旧上限 +18.7%**；
+- 50k needle ✓、单流无回归；EAGLE 在高并发下仍是净收益（verify 一次前向的带宽成本摊到 accept ~2.4-2.9 个 token），无需降级非投机。
+
 ## 9. 最终配置与入口
 
 ### 9.1 `/root/run_sglang.sh`（最优参数，2026-08-17 起为 EAGLE + HiCache 版）

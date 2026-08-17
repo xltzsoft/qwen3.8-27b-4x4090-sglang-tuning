@@ -59,6 +59,10 @@ SGLang 0.5.17 的 GDN decode 链路已是 `fused_recurrent_gated_delta_rule_pack
 
 详见 [docs/tuning-record.md](docs/tuning-record.md) §8。
 
+### 并发吞吐（2026-08-18）：KV 池换 mamba 槽位
+
+并发上限原本被 mamba 状态槽封顶在 26（EAGLE 每请求 5 槽）。通过 `--max-total-tokens 420000`（KV 池 -36%，有 HiCache 兜底）+ `--max-mamba-cache-size 180` + `--max-running-requests 36` + `--cuda-graph-max-bs-decode 36`，并发上限 26 → 36，实测聚合吞吐（300 tokens/请求）：24 并发 1000 → 32 并发 **1187 tps（+18.7%，饱和点）**，36 并发持平。50k needle 与单流速度无回归。
+
 ## EAGLE 参数扫描与 prefill
 
 ![eagle sweep](images/eagle_sweep.png)
@@ -89,6 +93,7 @@ python -m sglang.launch_server \
   --attention-backend flashinfer \
   --mamba-ssm-dtype bfloat16 \
   --enable-hierarchical-cache --hicache-size 32 --hicache-write-policy write_back \
+  --max-total-tokens 420000 --max-mamba-cache-size 180 --max-running-requests 36 --cuda-graph-max-bs-decode 36 \
   --speculative-algorithm EAGLE \
   --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4 \
   --reasoning-parser qwen3 --tool-call-parser qwen3_coder \
