@@ -185,9 +185,40 @@ prefill 稳态 ~4-4.6k t/s（GEMM bound，约为 4×4090 FP8 理论值的 70%；
 
 ---
 
-## 8. 最终配置与入口
+## 8. HiCache 内存二级缓存（2026-08-17 增补）
 
-### 8.1 `/root/run_sglang.sh`（最优参数，2026-08-16 起为 EAGLE 版）
+主机内存扩容（32GB → 503GB）后上线 HiCache：GPU radix cache 驱逐的前缀 KV 下沉到主机内存（L2），复用时从内存回载而非重新 prefill。
+
+### 8.1 配置
+
+```bash
+--enable-hierarchical-cache --hicache-size 32 --hicache-write-policy write_back
+```
+
+- **混合 GDN 模型被一等支持**：走 `HiMambaRadixCache`（`mem_cache/hi_mamba_radix_cache.py`），全注意力层 KV + GDN mamba 检查点 + EAGLE draft KV 均有 host 池；与 EAGLE 无冲突（仅 `--enable-int8-mamba-checkpoint` 与 DCP>1 互斥）；
+- **`--hicache-size` 语义是"每 rank GB"**：TP4 下实际总量 = 4×。先设 64 → 4×64=256GB 池叠加权重加载瞬时占用被 **OOM-kill**；改 32 后：KV host 池 17.01GB/rank（全局 2,076,883 tokens ≈ 3.2× GPU 池 657,733）+ mamba host 缓存 15GB/rank + draft 1.06GB/rank，合计 ~132GB，稳态内存 140/503GB；
+- **`write_back` 而非默认 `write_through`**：decode 期间不在调度循环内联写内存，只在 GPU 驱逐时批量下沉。
+
+### 8.2 端到端验证（975k token 驱逐压力 > GPU 池 657,733，前缀被物理挤出显存）
+
+| 指标（31.6k-token needle 前缀） | 冷 prefill | 内存回载 |
+|---|---|---|
+| TTFT | 10.86s | **1.96s（5.5×）** |
+| needle 884213 | ✓ | ✓（回载后 KV+mamba 状态正确） |
+| `cached_tokens` | — | 31,552 / 31,591（99.9%） |
+
+监控：`/metrics` 的 `sglang:hicache_host_used_tokens` / `sglang:hicache_host_total_tokens`。
+注意边界：HiCache 是**前缀复用加速**，不提升并发上限（仍被 mamba 槽位封顶）、不扩大 256K 单请求上限、不改变 decode 速度。
+
+### 8.3 插曲：decode 降速事故（与 HiCache 无关）
+
+上线当天观测 decode 降至 ~65 tps，A/B 对照（同脚本带/不带 HiCache 重启实测同速）排除 HiCache。根因：**内存扩容时 VM 被重建，vCPU 只剩 1 个**（load average 4.5 超载），scheduler/tokenizer/detokenizer/4 个 TP worker 的 host 代码挤一个核。恢复 64 vCPU 后复测回到 §6/§7 各口径区间（spec bench 短上下文 142.8 tps、50k 120.7 tps，needle ✓）。教训：**VM 改配后先跑基线回归再动其他变更**。
+
+---
+
+## 9. 最终配置与入口
+
+### 9.1 `/root/run_sglang.sh`（最优参数，2026-08-17 起为 EAGLE + HiCache 版）
 ```bash
 export CUDA_VISIBLE_DEVICES=0,1,2,3
 python -m sglang.launch_server \
@@ -200,6 +231,7 @@ python -m sglang.launch_server \
   --mm-feature-transport cpu \
   --attention-backend flashinfer \
   --mamba-ssm-dtype bfloat16 \
+  --enable-hierarchical-cache --hicache-size 32 --hicache-write-policy write_back \
   --speculative-algorithm EAGLE \
   --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4 \
   --reasoning-parser qwen3 --tool-call-parser qwen3_coder \
@@ -209,16 +241,16 @@ python -m sglang.launch_server \
 备份：`run_sglang.sh.best-nospec`（无投机回退版，74-75 tps）、`run_sglang.sh.eagle-final`（同当前生产）、`run_sglang.sh.bak-pre-fix-20260816`（EAGLE@0.88 有 OOM 缺陷的旧版）、`run_sglang.sh.triton-baseline`、`run_sglang.sh.pre-opt`。
 实验工具链：`/root/gdn-opt/`（`sgl_launch.sh` 多配置启动器、`sgl_bench3.py` 统一压测、`sgl_ttft.py` prefill 压测、`sgl_final_check.py` 验收、`results/` 全部 JSON 原始数据）；本地镜像 `/Users/wushanzheng/Documents/dsh/gdn-opt/`。
 
-### 8.2 调用入口
+### 9.2 调用入口
 服务监听标准 OpenAI 兼容端点（`/v1/chat/completions`，含流式、`reasoning_content`、`prompt_tokens_details.cached_tokens`），统一 `Authorization: Bearer <api-key>` 鉴权；按自身网络环境配置内网/公网入口即可。
 
 ---
 
-## 9. 关键文件清单
+## 10. 关键文件清单
 
 | 位置 | 说明 |
 |---|---|
-| `/root/run_sglang.sh` | sglang 启动脚本（**EAGLE 最优配置，2026-08-16 起**） |
+| `/root/run_sglang.sh` | sglang 启动脚本（**EAGLE + HiCache 生产配置，2026-08-17 起**） |
 | `/root/run_sglang.sh.best-nospec` | 无投机回退版（74-75 tps） |
 | `/root/gdn-opt/` | 本轮调优实验工具链与 `results/` 原始数据 |
 | `/etc/systemd/system/sglang-qwen38.service` | systemd 服务 |
@@ -229,7 +261,7 @@ python -m sglang.launch_server \
 
 ---
 
-## 10. 遗留问题与未来方向
+## 11. 遗留问题与未来方向
 
 1. ~~**MTP 投机解码不可用**~~ **已解决（2026-08-16）**：长上下文"崩溃"为日志统计假象 + EAGLE 显存红线（0.80 + 禁 prefill 图）修复后，EAGLE 全面上线（见 §6）；vLLM 侧仍无优势；
 2. **通信瓶颈 15-21%**：VM 无 P2P 的结构性开销（NCCL 已是 RING_LL；`NCCL_ALGO=TREE` 直接崩溃；flashinfer/mscclpp/torch-symm-mem 融合 all-reduce 均需 P2P/NVLS）。**驱动层面已逐项排查（2026-08-16）**：① PCIe 链路负载下实测 Gen4 x16 满速（空闲显示 2.5GT/s 是链路省电降速，假象）；② 锁频 `-lgc 3105 -lmc 10501` 无收益——负载下被功耗墙压回 ~2745/10251 MHz，已还原默认；③ P2P 是 GeForce 驱动的产品级封锁，无用户态开关。换物理机（NVLink）或 H20/A100 级硬件可消除大半；PP2×TP2 可将 all-reduce 环从 4 卡缩到 2 卡，但引入流水线气泡且 EAGLE×PP 兼容性未验证，风险大于收益；

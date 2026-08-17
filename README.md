@@ -46,6 +46,19 @@ SGLang 0.5.17 的 GDN decode 链路已是 `fused_recurrent_gated_delta_rule_pack
 - P2P 是 GeForce 驱动的产品级封锁，无用户态开关；flashinfer/mscclpp/torch-symm-mem 融合 all-reduce 全部因此不可用；
 - 唯一出路是带 NVLink 的硬件（H20/A100/H100 级）或接受现状。
 
+## 更新（2026-08-17）：HiCache 内存二级缓存
+
+主机内存扩容到 503GB 后，给混合 GDN 模型上线了 HiCache（KV + mamba 状态检查点下沉主机内存做 L2，复用前缀时免重新 prefill）：
+
+![hicache reload](images/hicache_reload.png)
+
+- 配置：`--enable-hierarchical-cache --hicache-size 32 --hicache-write-policy write_back`。**注意 `--hicache-size` 是每 rank 的 GB 数**（TP4 总量 = 4×；设 64 曾导致 256GB 池 + 启动 OOM-kill）。KV host 池全局 2,076,883 tokens ≈ 3.2× GPU 池，含 GDN mamba 检查点与 EAGLE draft KV 的 host 池，合计 ~132GB；
+- 验证方法：用 **975k tokens 驱逐压力**（超过 GPU 池 657,733，保证前缀被物理挤出显存）后重新请求同一 31.6k needle 前缀——**TTFT 10.86s → 1.96s（5.5×），needle 答案回载后仍正确**，证明 KV + GDN 状态恢复链路端到端无误；
+- 边界：HiCache 加速的是**前缀复用**（多轮对话/共享长前缀/agent 场景），不提升并发上限（仍受 mamba 槽位限制）、不扩大单请求 256K 上限；
+- 插曲：上线当天 decode 一度降至 ~65 tps，A/B 对照排除 HiCache——根因是 VM 扩容时被重建只剩 **1 个 vCPU**，恢复 64 vCPU 后回到正常区间。教训：VM 改配后先跑基线回归。
+
+详见 [docs/tuning-record.md](docs/tuning-record.md) §8。
+
 ## EAGLE 参数扫描与 prefill
 
 ![eagle sweep](images/eagle_sweep.png)
@@ -75,6 +88,7 @@ python -m sglang.launch_server \
   --mm-feature-transport cpu \
   --attention-backend flashinfer \
   --mamba-ssm-dtype bfloat16 \
+  --enable-hierarchical-cache --hicache-size 32 --hicache-write-policy write_back \
   --speculative-algorithm EAGLE \
   --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4 \
   --reasoning-parser qwen3 --tool-call-parser qwen3_coder \
@@ -93,6 +107,7 @@ python -m sglang.launch_server \
 | `sgl_ttft.py` | prefill TTFT 压测（随机盐绕 radix cache） |
 | `sgl_profile_spec50k.py` / `sgl_profile_decode.py` | torch profiler 采集与 kernel 时间聚合 |
 | `sgl_final_check.py` | 验收：100k needle + 4 并发 + 多模态冒烟 |
+| `hicache_e2e_test.py` | HiCache 端到端验证：驱逐压力→内存回载 TTFT/needle（见 §8） |
 | `quality_diff.py` | 质量集与基线对比门禁 |
 | `gen_charts.py` | 本 README 图表生成 |
 

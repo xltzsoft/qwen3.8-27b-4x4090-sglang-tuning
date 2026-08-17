@@ -17,6 +17,9 @@ exec /opt/sgenv/bin/python -m sglang.launch_server \
   --mm-feature-transport cpu \
   --attention-backend flashinfer \
   --mamba-ssm-dtype bfloat16 \
+  --enable-hierarchical-cache \
+  --hicache-size 32 \
+  --hicache-write-policy write_back \
   --speculative-algorithm EAGLE \
   --speculative-num-steps 3 \
   --speculative-eagle-topk 1 \

@@ -94,3 +94,22 @@ fig.savefig(f'{OUT}/prefill_ttft.png')
 plt.close(fig)
 
 print('charts written')
+
+# ---------- Chart: HiCache host-memory prefix reload (2026-08-17) ----------
+fig, ax = plt.subplots(figsize=(6.6, 3.9))
+labels = ['Cold prefill\n(GPU recompute)', 'HiCache reload\n(host RAM L2)']
+vals = [10.86, 1.96]  # measured TTFT, 31.6k-token needle prefix after forced eviction
+bars = ax.bar(labels, vals, color=['#888888', '#2ca02c'], width=0.52)
+for b, v in zip(bars, vals):
+    ax.text(b.get_x() + b.get_width() / 2, v + 0.25, f'{v:.2f} s', ha='center', fontsize=11)
+ax.annotate('5.5x faster\nneedle answer correct after reload', xy=(1, 1.96), xytext=(0.62, 6.2),
+            arrowprops=dict(arrowstyle='->', color='#444'), fontsize=9.5, color='#222')
+ax.set_ylabel('TTFT (seconds, lower = better)')
+ax.set_title('HiCache L2 (host RAM) prefix reload, 31.6k-token prefix\n'
+             'evicted from GPU by 975k-token pressure, then re-requested\n'
+             'Qwen3.8-27B-FP8 (hybrid GDN), 4x RTX 4090, SGLang 0.5.17')
+ax.set_ylim(0, 12.5)
+fig.tight_layout()
+fig.savefig(f'{OUT}/hicache_reload.png')
+plt.close(fig)
+print('hicache_reload.png written')
